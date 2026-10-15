@@ -260,23 +260,18 @@ async fn sign_up(email: String, password: String) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Signing out also stops sharing: the node authenticated its stream with the
+/// previous account's token, so leaving it up would keep serving that
+/// account's organization from a signed-out Mac. The "sharing" preference
+/// lives in the frontend and is left alone, so the next sign-in resumes it.
 #[tauri::command]
 async fn logout(
     state: tauri::State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Clear in-memory state
-    let mut token = state.access_token.lock().await;
-    *token = None;
-    drop(token);
+    end_session(&state).await;
 
-    let mut refresh = state.refresh_token.lock().await;
-    *refresh = None;
-    drop(refresh);
-
-    let mut log = state.message_log.lock().await;
-    log.clear();
-    drop(log);
+    set_connection_status(&state, &app_handle, status::ConnectionStatus::Disconnected).await;
 
     // Clear persistent store
     if let Err(e) = clear_tokens_from_store(&app_handle).await {
@@ -284,6 +279,24 @@ async fn logout(
     }
 
     Ok(())
+}
+
+/// The in-memory half of `logout`, apart from the AppHandle so it can be
+/// tested: stops the running connection and forgets the session.
+async fn end_session(state: &AppState) {
+    cancel_active_connection(state).await;
+
+    *state.access_token.lock().await = None;
+    *state.refresh_token.lock().await = None;
+    state.message_log.lock().await.clear();
+}
+
+/// Tears down the running connection - the heartbeat task and the message
+/// receive loop in grpc_client.rs both watch this token.
+async fn cancel_active_connection(state: &AppState) {
+    if let Some(cancel_token) = state.active_connection_cancel.lock().await.take() {
+        cancel_token.cancel();
+    }
 }
 
 #[tauri::command]
@@ -433,16 +446,13 @@ async fn disconnect_grpc(
 ) -> Result<(), String> {
     println!("Disconnecting gRPC connection...");
 
-    // Actually tear down the running connection - the heartbeat task and the
-    // message receive loop in grpc_client.rs both watch this token. Without
-    // this, "disconnect" only ever changed the status label: the old stream
-    // and its heartbeat kept running, and re-enabling sharing opened a
-    // second stream for the same device_id alongside the still-live first
-    // one, which the server then rejected (surfacing as the "stalled" phase
-    // that Retry couldn't fix, since retrying just opened a third stream).
-    if let Some(cancel_token) = state.active_connection_cancel.lock().await.take() {
-        cancel_token.cancel();
-    }
+    // Actually tear down the running connection. Without this, "disconnect"
+    // only ever changed the status label: the old stream and its heartbeat
+    // kept running, and re-enabling sharing opened a second stream for the
+    // same device_id alongside the still-live first one, which the server
+    // then rejected (surfacing as the "stalled" phase that Retry couldn't
+    // fix, since retrying just opened a third stream).
+    cancel_active_connection(&state).await;
 
     // Set status to Disconnected
     // This will also signal any retry loop to stop
@@ -1183,4 +1193,60 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn signed_in_state() -> AppState {
+        let model_cache_dir = std::env::temp_dir().join("nodea-test-models");
+        AppState {
+            access_token: Arc::new(Mutex::new(Some("access".to_string()))),
+            refresh_token: Arc::new(Mutex::new(Some("refresh".to_string()))),
+            device_id: Arc::new("device-001".to_string()),
+            message_log: Arc::new(Mutex::new(vec![MessageLogEntry {
+                timestamp: "2026-10-04T00:00:00Z".to_string(),
+                log_type: "grpc".to_string(),
+                message_type: "Connection".to_string(),
+                content: "connected".to_string(),
+                status_code: None,
+                request_body: None,
+                response_body: None,
+                duration_ms: None,
+            }])),
+            model_manager: model_manager::create_model_manager(model_cache_dir.clone()),
+            connection_status: Arc::new(Mutex::new(status::ConnectionStatus::Connected)),
+            model_status: Arc::new(Mutex::new(status::ModelStatus::NoModel)),
+            active_connection_cancel: Arc::new(Mutex::new(None)),
+            generations: Arc::new(ai4all_tauri::generations::Generations::new()),
+            model_cache_dir: Arc::new(model_cache_dir),
+            model_switch: Arc::new(Mutex::new(())),
+        }
+    }
+
+    #[tokio::test]
+    async fn ending_the_session_stops_the_running_connection() {
+        let state = signed_in_state();
+        let connection = tokio_util::sync::CancellationToken::new();
+        *state.active_connection_cancel.lock().await = Some(connection.clone());
+
+        end_session(&state).await;
+
+        // The heartbeat and receive loops watch this token; left uncancelled,
+        // the device kept serving the previous account after sign-out.
+        assert!(connection.is_cancelled());
+        assert!(state.active_connection_cancel.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn ending_the_session_forgets_the_account() {
+        let state = signed_in_state();
+
+        end_session(&state).await;
+
+        assert!(state.access_token.lock().await.is_none());
+        assert!(state.refresh_token.lock().await.is_none());
+        assert!(state.message_log.lock().await.is_empty());
+    }
 }
