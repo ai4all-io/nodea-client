@@ -163,6 +163,12 @@ export const mockInvoke = async <T>(command: string, args?: any): Promise<T> => 
     case 'disconnect_grpc':
       return Promise.resolve() as T
 
+    case 'logout':
+      // Like the Rust command: signing out ends the connection too.
+      currentConnectionStatus = { type: 'Disconnected' }
+      emitEvent('connection-status-changed', currentConnectionStatus)
+      return Promise.resolve() as T
+
     case 'load_model_auto':
       // Don't restart lifecycle if already started
       if (currentModelStatus.type === 'NoModel') {

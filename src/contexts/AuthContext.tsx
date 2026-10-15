@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/tauri'
 import { createClient } from '@supabase/supabase-js'
 import { apiClient, Organization } from '../lib/api'
 import { isTauriApp } from '../lib/platform'
+import { mockInvoke } from '../lib/mockTauri'
 
 // Initialize Supabase client for web mode
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
@@ -481,7 +482,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     if (demoMode) {
-      // In demo mode, just clear the user state
+      // The mock stands in for the Rust command, which also stops sharing.
+      await mockInvoke('logout').catch(console.error)
       setUser(null)
       setOrganization(null)
       return
@@ -489,7 +491,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     try {
       if (isTauriApp()) {
-        // Tauri mode: use invoke command
+        // Also stops sharing (see `logout` in src-tauri/src/main.rs), so a
+        // signed-out Mac stops serving the previous account's organization.
         await invoke('logout')
       } else {
         // Web mode: use Supabase client
