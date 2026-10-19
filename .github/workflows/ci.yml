@@ -9,8 +9,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Least privilege for the workflow token. Nothing here writes to the repo:
-# the release job uploads to Supabase Storage with its own credentials.
+# Least privilege for the workflow token. Nothing here writes to the repo.
 permissions:
   contents: read
 
@@ -109,8 +108,8 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
-  # scripts/select_bundle.sh is load-bearing for the release workflow; this is
-  # the job that keeps its test honest.
+  # scripts/ is load-bearing for the release workflow (version numbering,
+  # version stamping, bundle selection); this is the job that keeps it honest.
   scripts:
     runs-on: ubuntu-latest
     steps:

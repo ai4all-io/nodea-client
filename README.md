@@ -128,6 +128,23 @@ npm run tauri build
 
 The built app will be in `src-tauri/target/release/bundle/`.
 
+### Releases
+
+Releases are versioned `YY.M.X`: the year, the month, and a counter for that
+month (`26.10.1`, `26.10.2`, then `26.11.1`). Running the **Release Desktop
+App** workflow on `main` tags the next version, builds macOS, Linux and Windows
+from that tag, and creates a draft GitHub Release with the bundles, a
+`SHA256SUMS` file and build-provenance attestations. Publishing the draft makes
+it the download at `releases/latest`. The version in `package.json`,
+`tauri.conf.json` and `Cargo.toml` is a placeholder; the release build stamps
+the real one in.
+
+To check a download came from this repository:
+
+```bash
+gh attestation verify Nodea-mac.dmg --repo ai4all-io/nodea-client
+```
+
 ## Testing
 
 ### Unit Tests (Rust)
@@ -194,7 +211,7 @@ npm run test:ui
 ├── tests/                 # Playwright tests - no backend required
 ├── protos/                # Vendored gRPC contract, see docs/PROTO_SYNC.md
 │   └── service.proto
-├── scripts/               # select_bundle.sh and its test, used by the release job
+├── scripts/               # release job helpers (versioning, bundle selection) and their tests
 ├── .github/workflows/     # CI and the release matrix
 ├── package.json           # Node dependencies
 └── vite.config.ts         # Vite configuration
