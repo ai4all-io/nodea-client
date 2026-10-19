@@ -1,0 +1,265 @@
+syntax = "proto3";
+
+package ai4all.v1;
+
+service AI4AllService {
+  // Method that clients use to regiter to the system and start sending/receive
+  // messages in a bi-directional stream
+  rpc StreamEvents(stream StreamEventsRequest) returns (stream StreamEventsResponse);
+}
+
+
+// Real token counts from the inference engine. Only ever set on a terminal
+// GeneratedText. total_tokens is derived by the backend, not put on the wire.
+message Usage {
+  uint32 prompt_tokens = 1;
+  uint32 completion_tokens = 2;
+}
+
+message GeneratedText {
+  string request_id = 1;
+  string text = 2;
+  bool last = 3;
+
+  // Terminal metadata. These live on GeneratedText rather than as a new member
+  // of the StreamEventsRequest oneof so that it arrives *with* the terminal
+  // token: a separate message would force the backend's get_response into a
+  // "have I received both yet?" state machine with its own timeout, and would
+  // need request_id and terminal semantics anyway.
+  //
+  // A node that does not report usage omits it entirely. The backend must
+  // detect that per-request with HasField("usage") rather than from the
+  // capability list, because a node can fail to report for reasons unrelated
+  // to its version.
+  optional Usage usage = 4;           // set only when last = true
+  optional string finish_reason = 5;  // set only when last = true
+  // A terminal failure: text is empty and there is nothing more coming. Also
+  // covers a pre-generation failure (model not loaded, no messages), which
+  // previously was logged on the node and dropped, leaving the backend to time
+  // out.
+  optional string error = 6;
+
+  // Tool calls the model emitted, as OpenAI's tool_calls array in verbatim
+  // JSON. mistralrs's ToolCallResponse serialises to exactly that shape.
+  //
+  // The engine detects tool calls by parsing the generated text and emits each
+  // one complete, in a single chunk, together with finish_reason "tool_calls" -
+  // it does not stream partial argument deltas the way OpenAI's own API does.
+  // A client accumulating deltas therefore receives the whole call in one
+  // delta, which is valid but worth knowing.
+  optional string tool_calls = 7;
+
+  // This token's log probabilities, as one OpenAI ChatCompletionTokenLogprob
+  // object in verbatim JSON. Built on the node because only the node has the
+  // tokenizer: mistralrs reports alternatives by token *id*, and OpenAI's shape
+  // wants the token text plus its UTF-8 bytes.
+  optional string logprobs = 8;
+
+  // Which of the n requested completions this token belongs to. Unset means 0,
+  // so a node that predates n > 1 is indistinguishable from one generating a
+  // single choice.
+  //
+  // Note how this interacts with `last`: with several choices in flight, `last`
+  // keeps its original meaning - "no more tokens for this request at all" - and
+  // an individual choice finishing is signalled by its `finish_reason`. Making
+  // `last` per-choice instead would have meant the backend could not tell when
+  // to stop reading, and get_response would have needed to know n.
+  optional uint32 choice_index = 9;
+}
+
+message Heartbeat {
+}
+
+message DeviceIdentity {
+  string device_id = 1;
+  string device_type = 2;
+  string device_name = 3;
+  string device_model = 4;
+  // DEPRECATED: read total_memory_mb/available_memory_mb/accelerator_memory_mb.
+  // Kept so older nodes still connect; despite the old "free GPU memory" label
+  // it was total RAM on macOS, MemAvailable on Linux and a 4096 constant
+  // elsewhere. The backend only falls back to it when total_memory_mb is 0.
+  uint32 free_memory_mb = 5;
+
+  // The node's own version, for telemetry only. It CANNOT gate features:
+  // every build reports 0.1.0 (Cargo.toml, tauri.conf.json, package.json all
+  // say so and nothing bumps them), so a version compare is a no-op by
+  // construction. It is still worth having - we currently cannot tell which
+  // nodes predate a given fix.
+  string app_version = 6;
+
+  // What this node can actually do, as opaque strings the backend matches
+  // exactly. This is the feature-gating mechanism: a request using a field
+  // the routed node does not claim is rejected naming the node, rather than
+  // silently answered as if the field had not been sent. Purely additive
+  // node->backend, so an older node simply reports none.
+  repeated string capabilities = 7;
+
+  // Memory in megabytes. total_memory_mb is total physical RAM;
+  // available_memory_mb is currently available system RAM;
+  // accelerator_memory_mb is the inference backend's own ceiling (Metal
+  // working set on macOS, VRAM on CUDA), unset meaning "CPU, bounded by RAM".
+  uint32 total_memory_mb = 8;
+  uint32 available_memory_mb = 9;
+  optional uint32 accelerator_memory_mb = 10;
+  // What this node already has resident, so a reconnect adopts reality instead
+  // of re-deciding and reloading a node that was already correct.
+  // REGISTRY KEY, not a GGUF filename.
+  optional string loaded_model_ref = 11;
+  // Models already on disk, as REGISTRY KEYS. Lets the switching penalty be
+  // per-(node, model): a cached target reloads in seconds, a cold one costs a
+  // multi-GB download. The node maps key -> filename for is_model_cached itself.
+  repeated string cached_model_refs = 12;
+}
+
+
+// Node -> backend progress of a model load, written through to the device's
+// history rows. A reassignment downloads while the old model keeps serving,
+// then drains, unloads and loads.
+message ModelLoadStatus {
+  string model_ref = 1;              // REGISTRY KEY, not a GGUF filename
+  string status = 2;                 // downloading|draining|loading|ready|failed
+  // One progress figure covering both phases: download % while downloading,
+  // load % while loading, and 100 on ready.
+  optional uint32 progress_pct = 3;
+  // Elapsed load time: reported while loading, and total on ready.
+  optional uint32 load_ms = 4;
+  optional string error = 5;         // set on failed
+}
+
+
+message StreamEventsRequest {
+  oneof msg {
+    GeneratedText generated_text = 1;
+    Heartbeat heartbeat = 2;
+    DeviceIdentity device_identity = 5;
+    // 6, not 3: 3 and 4 are the top-level user_id/device_id below.
+    ModelLoadStatus model_load_status = 6;
+  }
+
+  string user_id = 3;
+  string device_id = 4;
+}
+
+
+message StreamEventsResponse {
+  string request_id = 1;    // Unique identifier for the request
+
+  oneof msg {
+    ChatCompletionRequest chat_completion_request = 2;
+    LoadModel load_model = 3;
+    CancelGeneration cancel_generation = 4;
+    UnloadModel unload_model = 5;
+  }
+}
+
+// Stop generating for the request_id on the envelope. Empty by design: the
+// envelope already carries the id, and there is nothing else to say.
+//
+// Without this, an abandoned request keeps a node generating to completion
+// *while holding* its model_manager lock, so one client with short timeouts can
+// pin a node indefinitely.
+message CancelGeneration {
+}
+
+// Free the node's loaded model and leave it connected but unassigned. Empty:
+// a node holds one model, so there is nothing to name. The scheduler only
+// sends it when no other model fits the node; otherwise a LoadModel replaces
+// the resident model.
+message UnloadModel {
+}
+
+// Sampling fields mirror the OpenAI chat completions API. They are optional so
+// an unset field is distinguishable from a zero value, and so older desktop
+// builds that do not know them keep working. The node applies its own default
+// when a field is unset.
+message ChatCompletionRequest {
+  repeated ChatMessage messages = 1;
+  optional float temperature = 2;
+  optional float top_p = 3;
+  optional uint32 max_tokens = 4;
+  optional int64 seed = 5;
+  repeated string stop = 6;
+  optional float frequency_penalty = 7;
+  optional float presence_penalty = 8;
+
+  // OpenAI's response_format object, carried verbatim as JSON rather than
+  // modelled in protobuf. JSON Schema is not expressible in protobuf, and
+  // mistralrs's Constraint::JsonSchema takes a serde_json::Value anyway, so
+  // re-modelling it would only add a lossy round-trip. The backend validates
+  // the envelope before sending it.
+  optional string response_format = 9;
+
+  // OpenAI's tools array and tool_choice, both verbatim JSON. mistralrs's
+  // Tool, Function and ToolChoice all derive Deserialize in OpenAI's own wire
+  // shape, so the node parses these directly and the proto does not have to
+  // model JSON Schema tool parameters. tool_choice is a string OR an object in
+  // the OpenAI schema, which is another reason not to model it.
+  optional string tools = 10;
+  optional string tool_choice = 11;
+
+  optional bool logprobs = 12;
+  optional uint32 top_logprobs = 13;
+
+  // How many completions to generate. Unset means one.
+  optional uint32 n = 14;
+
+  // Per-token logit adjustments, keyed by token id. OpenAI's own keys are
+  // already token ids, so this is a parse rather than a translation - but they
+  // are ids in *OpenAI's* tokenizer, and here they address the local model's.
+  // A bias set computed against OpenAI's vocabulary is meaningless on a node.
+  map<uint32, float> logit_bias = 15;
+
+  // OpenAI's web_search_options object, verbatim JSON. mistralrs's
+  // WebSearchOptions deserialises from OpenAI's shape, so search_context_size
+  // and user_location map 1:1 with no translation.
+  //
+  // Only a node that loaded its model with search enabled can honour this: it
+  // needs an embedding model downloaded and network egress, which is a
+  // deployment decision rather than something every node can do. Such a node
+  // advertises the "web_search" capability, and the backend rejects the field
+  // when the routed node does not.
+  optional string web_search_options = 16;
+
+  // OpenAI's reasoning_effort. Its enum has seven values; mistralrs 0.8.1
+  // expresses three (low, medium, high), so the backend rejects the rest rather
+  // than rounding them to the nearest - a caller who asked for "minimal" and
+  // silently got "low" is paying for reasoning tokens they tried to avoid.
+  optional string reasoning_effort = 17;
+}
+
+message ChatMessage {
+  // "system", "user", "assistant", or "tool". OpenAI's "developer" is
+  // normalised to "system" by the backend (it is OpenAI's own rename).
+  string role = 1;
+  string content = 2;
+  // OpenAI's optional per-message author name. Carried so a node could use it
+  // if a chat template ever consumes it; ignored today.
+  optional string name = 3;
+
+  // An assistant turn's tool calls, as OpenAI's tool_calls array in verbatim
+  // JSON, and a tool turn's tool_call_id. Without these a tool-calling
+  // conversation cannot be replayed to the model: it would see the tool's reply
+  // with no record of having asked for it.
+  optional string tool_calls = 4;
+  optional string tool_call_id = 5;
+}
+
+message LoadModel {
+  // The GGUF file to download, and the Hugging Face repo to download it from.
+  string model_name = 1;
+  string model_ref = 2;
+  // The registry key to report back as ModelLoadStatus.model_ref and
+  // DeviceIdentity.loaded_model_ref / cached_model_refs.
+  //
+  // Sent because it cannot be derived. The key is built from the repo id
+  // (`owner/repo:Q4_K_M`, see hf_catalog.CatalogEntry.key), which has no
+  // dependable relation to the filename - `ggml-org/gemma-3-1b-it-GGUF` ships
+  // `gemma-3-1b-it-Q4_K_M.gguf` - and the built-in keys follow no pattern at
+  // all. Before this field every node carried its own filename -> key table,
+  // which is why a model added from Hugging Face could not be served: no
+  // shipped build could name it. A wrong key does not fail loudly, it leaves
+  // the node silently unroutable, so the backend states it rather than
+  // letting each node guess.
+  string model_key = 3;
+}

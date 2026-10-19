@@ -1,0 +1,350 @@
+name: Build & Publish Desktop App
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Which platforms to build
+        type: choice
+        default: all
+        options: [all, mac, linux, windows]
+
+# Least privilege for the workflow token. Nothing here writes to the repo:
+# the release job uploads to Supabase Storage with its own credentials.
+permissions:
+  contents: read
+
+jobs:
+  # A job-level `if` is evaluated before the matrix expands, so it cannot
+  # reference matrix.platform, and filtering `include` with an expression adds
+  # combinations rather than removing them. Computing the matrix here is the
+  # way to let a dispatch pick one platform.
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+          linux='{"platform":"linux","runner":"ubuntu-latest","container":"ubuntu:22.04","bundle_subpath":"appimage/*.AppImage","dest_filename":"Nodea-linux.AppImage"}'
+          mac='{"platform":"mac","runner":"macos-latest","container":"","bundle_subpath":"dmg/*.dmg","dest_filename":"Nodea-mac.dmg"}'
+          windows='{"platform":"windows","runner":"windows-latest","container":"","bundle_subpath":"msi/*.msi","dest_filename":"Nodea-windows.msi"}'
+
+          # Empty means the dispatch came from a ref whose default the API did
+          # not apply; treat it as "all" so a bare dispatch still builds.
+          case "${{ inputs.platforms }}" in
+            mac)     M="[$mac]" ;;
+            linux)   M="[$linux]" ;;
+            windows) M="[$windows]" ;;
+            *)       M="[$linux,$mac,$windows]" ;;
+          esac
+          echo "matrix=$M" >> "$GITHUB_OUTPUT"
+          echo "Building: $(echo "$M" | grep -o '"platform":"[a-z]*"' | cut -d'"' -f4 | tr '\n' ' ')"
+
+  build:
+    needs: select
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.select.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    # An empty string means "no container", so only the Linux entry gets one.
+    container: ${{ matrix.container }}
+    steps:
+      # The container is bare and actions/checkout needs git, so this runs
+      # before the checkout. Everything runs as root here, so no sudo.
+      - name: Install base tooling
+        if: matrix.platform == 'linux'
+        run: |
+          apt-get update
+          apt-get install -y curl wget file git ca-certificates build-essential pkg-config
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies for Tauri
+        if: matrix.platform == 'linux'
+        run: |
+          apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev desktop-file-utils
+          # No protobuf-compiler: src-tauri/build.rs uses protoc-bin-vendored.
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Every runner is GitHub-hosted and has no persistent disk, so unlike the
+      # monorepo this caches on all three platforms.
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: cargo-release-${{ matrix.platform }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-release-${{ matrix.platform }}-
+
+      # Mirrors .env.development - the same shared remote backend and Supabase
+      # project `npm run tauri:dev` uses.
+      - name: Write production env file
+        shell: bash
+        run: |
+          cat > .env.production <<EOF
+          VITE_API_BASE_URL=${VITE_API_BASE_URL}
+          GRPC_SERVER=${GRPC_SERVER}
+          SUPABASE_URL=${SUPABASE_URL}
+          SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+          VITE_SUPABASE_URL=${VITE_SUPABASE_URL}
+          VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+          EOF
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          GRPC_SERVER: ${{ vars.GRPC_SERVER }}
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # codesign refuses a private key to a non-interactive session unless the
+      # key's partition list allows it, failing with errSecInternalComponent.
+      # tauri-bundler's own keychain setup imports the certificate but never
+      # calls set-key-partition-list, so the key stays behind a UI prompt that
+      # cannot appear in CI.
+      #
+      # Preparing the keychain here instead means APPLE_CERTIFICATE is
+      # deliberately NOT passed to the build: the bundler then skips its own
+      # setup and just runs codesign, which finds this keychain on the search
+      # list.
+      - name: Prepare a signing keychain
+        if: matrix.platform == 'mac' && env.APPLE_CERTIFICATE_IN != ''
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_IN: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD_IN: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/nodea-signing.keychain-db"
+          KC_PASS="$(uuidgen)"
+          echo "NODEA_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+          # A leftover keychain from a failed run would otherwise be reused
+          # half-configured; deleting first makes the step idempotent.
+          security delete-keychain "$KEYCHAIN" 2>/dev/null || true
+          security create-keychain -p "$KC_PASS" "$KEYCHAIN"
+          # No auto-lock: a lock part-way through a long build would fail
+          # signing with the same opaque error.
+          security set-keychain-settings -u "$KEYCHAIN"
+          security unlock-keychain -p "$KC_PASS" "$KEYCHAIN"
+
+          CERT="$RUNNER_TEMP/cert.p12"
+          printf '%s' "$APPLE_CERTIFICATE_IN" | base64 --decode > "$CERT"
+          security import "$CERT" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD_IN" \
+            -T /usr/bin/codesign -T /usr/bin/productbuild
+          rm -f "$CERT"
+
+          # The step tauri-bundler omits, and the whole reason for this job.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KC_PASS" "$KEYCHAIN" >/dev/null
+
+          # Prepend to the search list, keeping what was already there.
+          security list-keychains -d user -s "$KEYCHAIN" \
+            $(security list-keychains -d user | tr -d '"')
+
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Write the notary API key
+        if: matrix.platform == 'mac' && env.APPLE_API_KEY_P8_IN != ''
+        shell: bash
+        env:
+          APPLE_API_KEY_P8_IN: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$APPLE_API_KEY_P8_IN" | base64 --decode > "$KEY"
+          chmod 600 "$KEY"
+          echo "NODEA_NOTARY_KEY=$KEY" >> "$GITHUB_ENV"
+
+      # Proves the fix before spending a build on it, and turns
+      # errSecInternalComponent into a named failure instead of
+      # "failed to sign app".
+      - name: Check the runner can sign
+        if: matrix.platform == 'mac' && env.APPLE_SIGNING_IDENTITY_IN != ''
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY_IN: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          PROBE="$RUNNER_TEMP/signprobe"
+          cp /bin/echo "$PROBE"
+          if ! codesign --force --options runtime --timestamp \
+               -s "$APPLE_SIGNING_IDENTITY_IN" "$PROBE"; then
+            echo "::error::codesign cannot use the signing key in this session (see the error above). errSecInternalComponent means the key's partition list does not allow non-interactive access."
+            rm -f "$PROBE"
+            exit 1
+          fi
+          codesign --verify --strict "$PROBE"
+          rm -f "$PROBE"
+          echo "codesign works in this session"
+
+      # tauri build does not clear release/bundle - it writes alongside
+      # whatever is there, and a restored cache can carry a previous run's
+      # bundles. Renaming the app once left AI4All.app next to Nodea.app, and
+      # the same applies to the AppImage and MSI, whose filenames carry the
+      # product name and version. Everything that picks a bundle afterwards
+      # must see only this run's output.
+      - name: Remove stale bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d src-tauri/target/release/bundle ]; then
+            echo "Removing src-tauri/target/release/bundle"
+            rm -rf src-tauri/target/release/bundle
+          fi
+
+      - name: Build Tauri bundle
+        shell: bash
+        # linuxdeploy and appimagetool are AppImages themselves and want FUSE,
+        # which a container does not have; this makes them self-extract instead.
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          # Suffixed _IN because the bundler reads the unsuffixed names and
+          # treats an empty value as "present": APPLE_CERTIFICATE="" makes it
+          # build a keychain out of nothing and fail. They are exported below
+          # only when actually set, so a build with no secrets configured
+          # still produces an unsigned bundle rather than erroring.
+          APPLE_CERTIFICATE_IN: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD_IN: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY_IN: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY_IN: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER_IN: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+
+          if [ "${{ matrix.platform }}" = "mac" ] && [ -n "${APPLE_CERTIFICATE_IN:-}" ]; then
+            echo "Signing with ${APPLE_SIGNING_IDENTITY_IN}"
+            # Only the identity: the certificate is already in the keychain
+            # prepared above. Exporting APPLE_CERTIFICATE here would make the
+            # bundler build its own keychain without a partition list, which
+            # is the failure this replaced.
+            export APPLE_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY_IN"
+
+            # Notarisation is separate from signing, and skipping it is not a
+            # cosmetic loss: the DMG is downloaded over the web, so it carries
+            # the quarantine bit, and an un-notarised app is refused by
+            # Gatekeeper with "Nodea is damaged and can't be opened".
+            if [ -n "${NODEA_NOTARY_KEY:-}" ]; then
+              export APPLE_API_KEY="$APPLE_API_KEY_IN"
+              export APPLE_API_ISSUER="$APPLE_API_ISSUER_IN"
+              export APPLE_API_KEY_PATH="$NODEA_NOTARY_KEY"
+              echo "Notarising the app with App Store Connect API key $APPLE_API_KEY"
+            else
+              echo "::warning::APPLE_API_KEY_P8 is unset - the bundle will be signed but NOT notarised, and Gatekeeper will refuse it on download."
+            fi
+          elif [ "${{ matrix.platform }}" = "mac" ]; then
+            echo "::warning::No Apple signing secrets configured - producing an unsigned macOS bundle."
+          fi
+
+          if [ "${{ matrix.platform }}" = "mac" ]; then
+            # --verbose makes the bundler print the codesign error it would
+            # otherwise collapse into "failed to sign app".
+            npm run tauri build -- --verbose
+          else
+            npm run tauri build
+          fi
+
+      # tauri-bundler notarises and staples the .app, then builds the DMG from
+      # it and only *signs* the DMG - it never submits the container. The DMG is
+      # what gets downloaded and quarantined, so it needs its own ticket;
+      # without one Gatekeeper has nothing to check offline.
+      - name: Notarise and staple the DMG
+        if: matrix.platform == 'mac' && env.NODEA_NOTARY_KEY != ''
+        shell: bash
+        env:
+          APPLE_API_KEY_IN: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER_IN: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          DMG=$(scripts/select_bundle.sh 'dmg/*.dmg' src-tauri/target/release/bundle)
+
+          echo "Submitting $(basename "$DMG") to Apple"
+          xcrun notarytool submit "$DMG" --wait \
+            --key-id "$APPLE_API_KEY_IN" \
+            --key "$NODEA_NOTARY_KEY" \
+            --issuer "$APPLE_API_ISSUER_IN"
+
+          xcrun stapler staple -v "$DMG"
+
+      # Proves the three things that actually decide whether a download runs:
+      # the signature is valid, Gatekeeper accepts it, and the notarisation
+      # ticket is stapled so the check works offline. Without this the first
+      # evidence of a signing problem is a user seeing "damaged".
+      - name: Verify the macOS signature and notarisation
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=$(scripts/select_bundle.sh 'macos/*.app' src-tauri/target/release/bundle)
+          DMG=$(scripts/select_bundle.sh 'dmg/*.dmg' src-tauri/target/release/bundle)
+
+          if ! codesign --verify --deep --strict --verbose=2 "$APP" 2>&1; then
+            echo "::error::The .app is not correctly signed"
+            exit 1
+          fi
+          codesign --display --verbose=4 "$APP" 2>&1 | grep -E 'Authority|TeamIdentifier|Signature' || true
+
+          # --context primary-signature is what checks a downloaded app rather
+          # than an installed one, which is the case that actually fails.
+          if ! spctl --assess --type execute --context context:primary-signature --verbose=4 "$APP" 2>&1; then
+            echo "::error::Gatekeeper rejects the app - it is unsigned, signed with the wrong certificate type, or not notarised"
+            exit 1
+          fi
+
+          if ! xcrun stapler validate "$DMG" 2>&1; then
+            echo "::error::The DMG has no stapled notarisation ticket, so Gatekeeper will refuse it on a machine that cannot reach Apple"
+            exit 1
+          fi
+          echo "Signed, notarised and stapled: $DMG"
+
+      - name: Remove the signing keychain
+        if: always() && matrix.platform == 'mac'
+        shell: bash
+        run: |
+          if [ -n "${NODEA_KEYCHAIN:-}" ]; then
+            security list-keychains -d user -s \
+              $(security list-keychains -d user | tr -d '"' | grep -v "$NODEA_KEYCHAIN" || true)
+            security delete-keychain "$NODEA_KEYCHAIN" 2>/dev/null || true
+          fi
+          rm -f "${NODEA_NOTARY_KEY:-}"
+          echo "signing keychain and notary key removed"
+
+      # Fixed "latest" path - always overwritten, no version tracking.
+      - name: Upload bundle to Supabase Storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE=$(scripts/select_bundle.sh '${{ matrix.bundle_subpath }}' src-tauri/target/release/bundle)
+          echo "Uploading $FILE ($(du -h "$FILE" | cut -f1)) as ${{ matrix.dest_filename }}"
+          HTTP_STATUS=$(curl -s -o /tmp/upload_response.json -w "%{http_code}" -X POST \
+            "${SUPABASE_URL}/storage/v1/object/desktop-releases/latest/${{ matrix.dest_filename }}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "x-upsert: true" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$FILE")
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "Upload failed with HTTP $HTTP_STATUS:"
+            cat /tmp/upload_response.json
+            exit 1
+          fi
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

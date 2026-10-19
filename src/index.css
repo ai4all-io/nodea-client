@@ -1,0 +1,17 @@
+/* @import must precede @tailwind (CSS requires imports to lead the file,
+ * and PostCSS silently drops one placed later). */
+@import './nodea-theme.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
