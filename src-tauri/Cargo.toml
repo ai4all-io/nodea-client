@@ -1,0 +1,92 @@
+[package]
+name = "ai4all-tauri"
+version = "0.1.0"
+description = "Nodea Tauri App"
+authors = ["GAYOSO LLC"]
+license = "Apache-2.0"
+repository = "https://github.com/ai4all-io/nodea-client"
+edition = "2021"
+
+[lib]
+name = "ai4all_tauri"
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+tonic-build = "0.11"
+dotenv = "0.15"
+protoc-bin-vendored = "3"
+
+[dependencies]
+# Only needed to implement mistralrs::RequestLike by hand (see
+# ReasoningRequest in model_manager.rs): the trait's messages_ref() signature
+# names IndexMap, so the type has to be spellable here. Unifies with the
+# version mistralrs-core already depends on, so Cargo.lock does not move.
+indexmap = "2.13"
+# Same reason as indexmap: RequestLike::images_ref() names image::DynamicImage.
+# Pinned to the version mistralrs-core already resolves to (0.25.9) so it is the
+# same type and Cargo.lock does not move. default-features = false keeps this
+# from pulling in codec work we never do - we never supply an image.
+image = { version = "0.25.9", default-features = false }
+tauri = { version = "1.5", features = ["shell-open", "window-start-dragging", "system-tray"] }
+tauri-plugin-deep-link = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+# `net` is for TcpListenerStream, used by the gRPC round-trip tests to serve
+# a mock backend on an ephemeral port.
+tokio-stream = { version = "0.1", features = ["sync", "net"] }
+tonic = { version = "0.11", features = ["tls", "tls-webpki-roots"] }
+prost = "0.12"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+reqwest = { version = "0.11", features = ["json", "stream"] }
+base64 = "0.21"
+sha2 = "0.10"
+rand = "0.8"
+open = "5.0"
+urlencoding = "2.1"
+hostname = "0.3"
+chrono = "0.4"
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["codec"] }
+# Total/available RAM on all three platforms (GlobalMemoryStatusEx on Windows).
+# Pinned to the version mistralrs-core already resolves to, so it is one crate.
+sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
+
+# mistralrs's "metal" and "accelerate" features wrap Apple-only APIs
+# (Metal GPU compute, the Accelerate framework) - gate them to macOS so
+# non-macOS builds (e.g. Linux CI) don't try to compile Apple bindings.
+[target.'cfg(target_os = "macos")'.dependencies]
+mistralrs = { version = "0.8", features = ["metal", "accelerate"] }
+# Metal recommendedMaxWorkingSetSize, the GPU's memory ceiling (src/memory.rs).
+# Same version candle already links for its Metal backend.
+objc2-metal = { version = "0.3.2", features = ["MTLDevice"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+mistralrs = { version = "0.8" }
+
+[dev-dependencies]
+tempfile = "3.8"
+tokio-test = "0.4"
+
+[features]
+default = []
+custom-protocol = ["tauri/custom-protocol"]
+
+# mistralrs-quant 0.8.1's build.rs compiles its Metal kernel sources via
+# `xcrun metal -c` twice into the same output directory, discarding the
+# first invocation's exit status entirely - see vendor/mistralrs-quant-0.8.1
+# for the fix and full explanation (the same bug was present, and patched
+# the same way, in 0.7.0). This crate has no
+# parent workspace, so the patch section lives directly here.
+[patch.crates-io]
+mistralrs-quant = { path = "vendor/mistralrs-quant-0.8.1" }
+
+# Keep debug builds small: line numbers in our crate's backtraces, no
+# debuginfo for dependencies. mistralrs/candle debuginfo grows target/ to
+# 5-20 GB, more than a GitHub-hosted runner has free.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

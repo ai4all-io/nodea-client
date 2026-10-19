@@ -1,0 +1,23 @@
+# gitleaks configuration for the Nodea desktop app.
+#
+# It sits at the repository root so anyone cloning gets the same clean result
+# from a bare `gitleaks detect`.
+#
+# The allowlist is deliberately narrow. Every entry is an exact value that is
+# published on purpose, and anything that stops matching - a rotated demo key,
+# a new placeholder spelling - surfaces as a finding for a human to look at
+# rather than being silently absorbed.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Supabase CLI local-stack demo keys"
+regexes = [
+  # The Supabase CLI generates the same anon and service_role keys for every
+  # local stack; they are in its published documentation and are useless
+  # against anything but a stack on your own machine. The base64 fragment is
+  # `{"iss":"supabase-demo"` - the real project's keys carry
+  # `{"iss":"supabase","ref":"<project>"` instead, so this cannot match one.
+  '''eyJpc3MiOiJzdXBhYmFzZS1kZW1vIi''',
+]

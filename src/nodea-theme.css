@@ -1,0 +1,157 @@
+/* Nodea desktop — theme sheet (Nocturne design system)
+ * Import once, after Tailwind's base layer:
+ *   src/index.css  →  @import './nodea-theme.css';
+ * Every value here is a design token. Do not introduce hexes outside this file.
+ */
+
+:root {
+  /* ---- Grounds -------------------------------------------------------- */
+  --n-bg: #161826;            /* window / main pane */
+  --n-sidebar: #1b1d2b;       /* sidebar, cards, table rows */
+  --n-raised: #20222f;        /* status widget, popovers */
+  --n-line: #22242f;          /* hairlines inside the main pane */
+  --n-line-strong: #2b2e3c;   /* sidebar edges, chart track */
+  --n-border: #2e313f;        /* card borders, inputs */
+
+  /* ---- Ink (text only) ------------------------------------------------ */
+  --n-text: #e9e9ed;
+  --n-text-2: #cfd3e5;
+  --n-text-3: #b2b6ca;
+  --n-text-4: #9397ab;
+
+  /* ---- Non-text neutrals (borders, inactive icons — NEVER text) ------- */
+  --n-mute: #75798c;
+  --n-mute-2: #595d6c;
+  --n-mute-3: #4a4d5e;
+  --n-mute-4: #3f424d;
+
+  /* ---- Accent ramp ---------------------------------------------------- */
+  --n-accent: #9184d9;
+  --n-accent-100: #f5f4ff;
+  --n-accent-200: #e7e5fe;
+  --n-accent-300: #d2cefd;
+  --n-accent-400: #b5abfc;
+  --n-accent-500: #968ae0;
+  --n-accent-600: #796cbf;
+  --n-accent-700: #5d5294;
+  --n-accent-800: #423a6a;
+  --n-accent-900: #2b2741;
+  /* chart ramp, low → high */
+  --n-bar-1: #4a4d5e;
+  --n-bar-2: #5d5294;
+  --n-bar-3: #6a5fa6;
+  --n-bar-4: #796cbf;
+  --n-bar-5: #8a7dcf;
+  --n-bar-6: #9184d9;
+
+  /* ---- Accent tints (interaction) ------------------------------------- */
+  --n-tint-row: rgba(145, 132, 217, 0.05);
+  --n-tint-hover: rgba(145, 132, 217, 0.08);
+  --n-tint-hover-strong: rgba(145, 132, 217, 0.12);
+  --n-tint-active: rgba(145, 132, 217, 0.16);
+  --n-tint-selected: rgba(145, 132, 217, 0.18);
+
+  /* ---- Type ----------------------------------------------------------- */
+  --n-font: "Inter", system-ui, -apple-system, sans-serif;
+  --n-font-mono: ui-monospace, Menlo, monospace;
+
+  /* ---- Radii ---------------------------------------------------------- */
+  --n-radius-xs: 4px;
+  --n-radius-sm: 6px;
+  --n-radius-md: 8px;
+  --n-radius-lg: 10px;
+  --n-radius-xl: 12px;
+  --n-radius-window: 14px;
+
+  /* ---- Elevation ------------------------------------------------------ */
+  --n-shadow-sm: 0 0 0 1px #3f424d;
+  --n-shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0, 0, 0, 0.55);
+  --n-shadow-lg: 0 0 0 1px #9397ab, 0 16px 40px rgba(0, 0, 0, 0.65);
+
+  /* ---- shadcn/ui bridge ----------------------------------------------
+   * Overrides the HSL vars already in src/index.css so every shadcn
+   * component lands on the Nocturne palette without being restyled.
+   */
+  --background: 232 24% 12%;        /* #161826 */
+  --foreground: 240 12% 92%;        /* #e9e9ed */
+  --card: 233 21% 14%;              /* #1b1d2b */
+  --card-foreground: 240 12% 92%;
+  --popover: 231 19% 16%;           /* #20222f */
+  --popover-foreground: 240 12% 92%;
+  --primary: 249 51% 68%;           /* #9184d9 */
+  --primary-foreground: 232 24% 12%;
+  --secondary: 231 15% 21%;         /* #2e313f */
+  --secondary-foreground: 240 12% 92%;
+  --muted: 231 15% 21%;
+  --muted-foreground: 227 13% 62%;  /* #9397ab */
+  --accent: 251 30% 32%;            /* #423a6a */
+  --accent-foreground: 249 92% 95%; /* #e7e5fe */
+  --destructive: 0 62% 58%;
+  --destructive-foreground: 240 12% 92%;
+  --border: 231 15% 19%;            /* #2b2e3c */
+  --input: 231 15% 21%;
+  --ring: 249 51% 68%;
+  --radius: 0.5rem;
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--n-bg);
+  color: var(--n-text);
+  font-family: var(--n-font);
+  font-feature-settings: "rlig" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;              /* the app window never scrolls as a whole */
+  user-select: none;             /* desktop app, not a document */
+}
+
+a { color: var(--n-accent-400); text-decoration: none; }
+a:hover { color: var(--n-accent-300); }
+
+::selection { background: var(--n-tint-selected); }
+
+:focus-visible {
+  outline: 2px solid var(--n-accent);
+  outline-offset: 2px;
+}
+
+button { font-family: var(--n-font); }
+[disabled] { opacity: 0.45; pointer-events: none; }
+
+/* Frameless window: the whole top strip drags. Put this on the sidebar's
+ * traffic-light row and the main titlebar strip.
+ *   <div className="n-drag" data-tauri-drag-region />
+ */
+.n-drag { -webkit-app-region: drag; }
+.n-drag button, .n-drag a, .n-no-drag { -webkit-app-region: no-drag; }
+
+/* ---- Animations ------------------------------------------------------- */
+@keyframes noc-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(0.82); }
+}
+@keyframes noc-spin { to { transform: rotate(360deg); } }
+@keyframes noc-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(320%); }
+}
+
+.n-pulse { animation: noc-pulse 2.4s ease-in-out infinite; }
+.n-spin  { animation: noc-spin 1.1s linear infinite; }
+.n-slide { animation: noc-slide 1.3s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .n-pulse, .n-spin, .n-slide { animation: none; }
+}
+
+/* ---- Scrollbars ------------------------------------------------------- */
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--n-mute-4);
+  border-radius: 5px;
+  border: 2px solid var(--n-bg);
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--n-mute-2); }

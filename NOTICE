@@ -1,0 +1,8 @@
+Nodea Desktop
+Copyright 2026 GAYOSO LLC
+
+This product bundles third-party software under its own licences. Their
+licence texts are in THIRD_PARTY_LICENSES.md, which ships with every build.
+
+src-tauri/vendor/mistralrs-quant-0.8.1 is a modified copy of mistralrs-quant
+(MIT, Copyright (c) 2024 Eric Buehler). See PATCHES.md in that directory.
