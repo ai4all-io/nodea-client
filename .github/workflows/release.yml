@@ -20,7 +20,12 @@ jobs:
     # branch.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment: release
+    environment:
+      name: release
+      # Only for the environment's secrets and variables. A release is
+      # published as a GitHub Release, not deployed anywhere, so no
+      # deployment record is created for the repository's Deployments page.
+      deployment: false
     permissions:
       contents: write
     # Two runs at once would both read the same tags and pick the same number.
@@ -56,7 +61,9 @@ jobs:
     # Every job runs in the release environment. It holds all the secrets and
     # variables this workflow reads (Apple signing and notarisation, the
     # production backend and Supabase settings); none are repository-level.
-    environment: release
+    environment:
+      name: release
+      deployment: false
     strategy:
       fail-fast: false
       matrix:
@@ -383,7 +390,9 @@ jobs:
   release:
     needs: [version, build]
     runs-on: ubuntu-latest
-    environment: release
+    environment:
+      name: release
+      deployment: false
     permissions:
       contents: write
       id-token: write
