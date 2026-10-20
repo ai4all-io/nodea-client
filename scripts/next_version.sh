@@ -4,8 +4,8 @@
 #
 # X is one more than the highest vYY.M.X tag in the current repository, or 1
 # when that month has none. The tags are the only record of which numbers are
-# taken, so the caller must have fetched them all, and must push the new tag
-# before building: a number whose build later fails is skipped, never reused.
+# taken, so the caller must have fetched them all. Nothing is reserved until
+# the caller pushes the tag, so runs must not overlap.
 #
 # The month is not zero-padded because the version must be valid semver (no
 # leading zeros) for Cargo, npm and Tauri; YY rather than YYYY because the
