@@ -132,8 +132,9 @@ The built app will be in `src-tauri/target/release/bundle/`.
 
 Releases are versioned `YY.M.X`: the year, the month, and a counter for that
 month (`26.10.1`, `26.10.2`, then `26.11.1`). Running the **Release Desktop
-App** workflow on `main` tags the next version, builds macOS, Linux and Windows
-from that tag, and creates a draft GitHub Release with the bundles, a
+App** workflow on `main` builds macOS, Linux and Windows with the next version
+stamped in and, once all three succeed, tags the commit and creates a draft
+GitHub Release with the bundles, a
 `SHA256SUMS` file and build-provenance attestations. Publishing the draft makes
 it the download at `releases/latest`. The version in `package.json`,
 `tauri.conf.json` and `Cargo.toml` is a placeholder; the release build stamps

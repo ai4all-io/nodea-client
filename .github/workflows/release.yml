@@ -1,8 +1,9 @@
 name: Release Desktop App
 
-# Each run cuts one release: it takes the next CalVer version (YY.M.X), tags
-# the commit, builds all three platforms from that tag and creates a draft
-# GitHub Release, which a person reviews and publishes. The website links to
+# Each run cuts one release: it works out the next CalVer version (YY.M.X),
+# builds all three platforms from the dispatched commit with that version
+# stamped in, and only once every build has succeeded tags the commit and
+# creates a draft GitHub Release, which a person reviews and publishes. The website links to
 # releases/latest/download/<asset>, and GitHub ignores drafts for "latest", so
 # nothing reaches users until it is published.
 #
@@ -13,6 +14,14 @@ on:
 
 permissions:
   contents: read
+
+# The version is chosen at the start but only claimed (tagged) at the end, so
+# two overlapping runs would both pick the same number. Running one release at
+# a time rules that out; a run started meanwhile waits for this one. If a tag
+# still collides, creating it fails rather than moving it.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   version:
@@ -26,14 +35,6 @@ jobs:
       # published as a GitHub Release, not deployed anywhere, so no
       # deployment record is created for the repository's Deployments page.
       deployment: false
-    permissions:
-      contents: write
-    # Two runs at once would both read the same tags and pick the same number.
-    # Serialising this job is enough: once the tag is pushed the next run sees
-    # it, and pushing a tag that already exists fails rather than moving it.
-    concurrency:
-      group: release-version
-      cancel-in-progress: false
     outputs:
       version: ${{ steps.next.outputs.version }}
     steps:
@@ -42,17 +43,14 @@ jobs:
           # Every tag, or the month's highest number could be missed.
           fetch-depth: 0
 
-      # Tagged before the build so the number is taken even if the build
-      # fails. A failed build leaves a gap in the month's numbering, which is
-      # deliberate: reusing a number could give two different binaries one
-      # version.
+      # Not tagged here: the tag is created only after every build succeeds,
+      # so a failed build leaves no tag behind and its number is used by the
+      # next run.
       - id: next
         shell: bash
         run: |
           set -euo pipefail
           VERSION=$(scripts/next_version.sh)
-          git tag "v$VERSION" "$GITHUB_SHA"
-          git push origin "refs/tags/v$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Releasing $VERSION from $GITHUB_SHA"
 
@@ -98,7 +96,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: v${{ needs.version.outputs.version }}
+          # The dispatched commit, pinned: every platform builds the same
+          # source even if main moves during the run, and it is the commit the
+          # tag will point at.
+          ref: ${{ github.sha }}
 
       - name: Install Linux dependencies for Tauri
         if: matrix.platform == 'linux'
@@ -411,6 +412,20 @@ jobs:
         run: |
           sha256sum Nodea-* > SHA256SUMS
           cat SHA256SUMS
+
+      # The version is claimed here, after every build succeeded. Created
+      # explicitly because a draft release's tag does not exist in git until
+      # the draft is published, and the next run counts tags to pick its
+      # number. Fails if the tag already exists, so a release is never
+      # attached to a different commit.
+      - name: Tag the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/v$VERSION" \
+            -f sha="$GITHUB_SHA" > /dev/null
+          echo "Tagged v$VERSION at $GITHUB_SHA"
 
       # Lets anyone check with `gh attestation verify` that a download was
       # built by this workflow from the release tag. Attestations on a private
