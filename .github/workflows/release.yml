@@ -20,6 +20,7 @@ jobs:
     # branch.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     # Two runs at once would both read the same tags and pick the same number.
@@ -52,8 +53,9 @@ jobs:
 
   build:
     needs: version
-    # Holds the Apple signing and notarisation secrets; protect it with
-    # required reviewers so a release needs a second person's approval.
+    # Every job runs in the release environment. It holds all the secrets and
+    # variables this workflow reads (Apple signing and notarisation, the
+    # production backend and Supabase settings); none are repository-level.
     environment: release
     strategy:
       fail-fast: false
@@ -381,6 +383,7 @@ jobs:
   release:
     needs: [version, build]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
       id-token: write
